@@ -1,0 +1,17 @@
+$-- import declarations
+
+$-- ${{imports * $[%$]$}
+
+$-- ${+someinclude$}
+
+   ${imports * $[import ${%$}$],$[, $]$}
+
+public class ${name$} ${parent $[extends ${%$}$]$} {
+       ${members */{
+                 field : $[${visibility$} ${type$} ${name/>> $};$] ,
+                 method:$[${visibility$} ${type$} ${name$}(${args *$[${type$} ${name$}$]$}) {
+                             ${body$}
+                          }$]
+                 }
+       $}        
+}
