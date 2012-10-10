@@ -5,11 +5,11 @@ import qualified Data.Map as M
 import "trifecta" Text.Trifecta.Delta
 import qualified "wl-pprint-extras" Text.PrettyPrint.Free as D(Doc)
 
-data Val = Obj (M.Map String Val)
-         | Arr [Val]
-         | String :@ Val
-         | Const String
-         | ConstD TDoc
+data Val = Obj (M.Map String Val)    -- ^ Record
+         | Arr [Val]                 -- ^ List
+         | String :@ Val             -- ^ Tagged value
+         | Const String              -- ^ String constant
+         | ConstD TDoc               -- ^ Embedded document constant (not used yet)
            deriving Show
 
 newtype TDoc = TD (forall e . D.Doc e)
@@ -31,9 +31,9 @@ type Template = Template' Arr
 
 type Dict a = M.Map String a
 
-data Var = N String
-         | Back Var
-         | Self
+data Var = N String              -- ^ Variable's name
+         | Back Var              -- ^ Parent record of the field
+         | Self                  -- ^ Current value
            deriving (Show, Eq)
 
 data LOpts = LNone | LHSep | LVSep | LFillSep 
@@ -46,13 +46,13 @@ data TOpt = TNone | TDef | TRaw | TGroup | THang | TAlign | TNest
 data Mod = SoftLine | Line | SBreak | LBreak
            deriving Show
 
-data Arr' a = Var Var (Maybe a) (Maybe a)
-            | Template (Template' a)
-            | List LOpts a (Maybe a) (Maybe a)
-            | Case (Dict a)
-            | Mod Mod
-            | Up a
-            | Down a
+data Arr' a = Var Var (Maybe a) (Maybe a)          -- ^ Variable with possible 
+            | Template (Template' a)               -- ^ Move to object level
+            | List LOpts a (Maybe a) (Maybe a)     -- ^ List 
+            | Case (Dict a)                        -- ^ Tag based sub-template selection
+            | Mod Mod                              -- ^ Layout control modifiers
+            | Up a                                 -- ^ Up level (not used now)
+            | Down a                               -- ^ Down level (not used now)
               deriving (Show)
 
 data Arr = A Delta (Arr' Arr) [TOpt]
