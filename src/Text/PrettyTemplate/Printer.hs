@@ -1,53 +1,111 @@
-{-# LANGUAGE PackageImports #-}
+{-# LANGUAGE TemplateHaskell #-}
 module Text.PrettyTemplate.Printer where
 
 import Text.PrettyTemplate.Syntax
 import Control.Monad.Reader
-import Control.Monad.Error
-import "wl-pprint-extras" Text.PrettyPrint.Free
+import Text.PrettyPrint.Leijen.Text
 import Data.Char
 import Data.Int
-import qualified Data.Map as M
-import Text.Trifecta.Delta
+import Data.Text(Text)
+import qualified Data.Text as T
+import qualified Data.Text.Lazy as LT
+import qualified Data.Text.Lazy.Builder as LT
+import qualified Data.Traversable as F
+import qualified Data.Vector as V
+import qualified Data.HashMap.Strict as M
+import Data.Hashable
+import Text.Trifecta.Delta(Delta)
+import qualified Text.Trifecta.Delta as P
+import qualified Text.Trifecta as P
+import qualified Control.Lens as L
+import Control.Lens.TH
+import Control.Lens.Operators
+import qualified Text.PrettyPrint.ANSI.Leijen as C
+import Control.Exception
+import System.IO(stderr)
+import Data.Aeson.Types
+import Data.Aeson.Encode(encodeToTextBuilder)
 
 data Env = Env {
-      stack_  :: [Val],
-      mcol_   :: !Int64,
-      odelta_ :: !Int64,
-      ocol_   :: !Int
+      _stack  :: ![Value],
+      _ocol :: !Int,
+      _curPos :: !P.Span
     }
 
-type D = ErrorT String (Reader Env)
+makeLenses ''Env
 
-err :: String -> D a
-err = throwError
+type D = ReaderT Env IO
 
-(<?>) :: D a -> String -> D a
-a <?> t = a `catchError` \e -> throwError $ e ++ " " ++ t
-infix 3 <?>
+posMsg :: C.Doc -> D C.Doc
+posMsg d = do
+  s <- L.view curPos
+  return $ d C.<+> C.parens (C.pretty (s ^. spanStart)) 
+         C.<$$>  C.pretty (P.render s) C.<> C.linebreak
 
-apply :: Val -> Template -> Either String (Doc e)
-apply v t = runReader (runErrorT (docTemplate t)) (Env [v] 0 0 0)
+errDoc :: C.Doc -> D C.Doc
+errDoc e = do
+  em <- posMsg e
+  return $ C.red (C.text "ERROR:") C.<+> em 
 
-docArr :: Arr -> D (Doc e)
-docArr (A p a opts) = return . applyOpts opts =<< case a of
-     Var v t e -> (maybe docE docT =<< getVar v)
-                      <?> "for variable " ++ show v ++ " at " ++ show (pretty p)
+err :: C.Doc -> D a
+err = throw . TemplateError <=< errDoc
+
+errS :: String -> D a
+errS = err . C.text
+
+warnDoc :: C.Doc -> D C.Doc
+warnDoc e = do
+  em <- posMsg e
+  return $ C.yellow (C.text "WARNING:") C.<+> em 
+
+warn :: C.Doc -> D ()
+warn = liftIO . C.displayIO stderr . C.renderPretty 0.8 80 <=< warnDoc
+
+warnS :: String -> D ()
+warnS = warn . C.text
+
+check :: String -> Maybe a -> D a
+check e Nothing  = errS e
+check _ (Just v) = return v
+
+lu :: (Show a, Hashable a, Eq a) => String -> M.HashMap a b -> a -> D b
+lu txt d k = case k `M.lookup` d of
+               Just v -> return v
+               Nothing -> err $ C.bold (C.text txt) 
+                          C.<+> C.text (show k)
+
+val :: FromJSON a => Value -> D a
+val v = case fromJSON v of
+          Error n -> err $ C.text "JSON parse error:" C.<+> C.text n
+          Success v -> return v
+
+apply :: Template -> Value -> IO Doc
+apply t v = runReaderT (docTemplate t) (Env [v] 0 posEmpty)
+
+applyRender :: Template -> Value -> IO Text
+applyRender t v = apply t v >>= 
+                  return . LT.toStrict . displayT . renderPretty 0.7 80 
+
+docArr :: Arr -> D Doc
+docArr (A p a o) = local (curPos .~ p) $ return . applyOpts o =<< case a of
+     Var v t e -> docT =<< getVar v
         where
         docC vv = case vv of
-                  Const vt      -> return . vcat . map text . lines $ vt
-                  ConstD (TD d) -> return d
-                  _             -> err "not a ground variable"
-        docT vv = maybe (docC vv) (newv vv) t 
-        docE = maybe (err "couldn't find variable") (docArr) e
-     Template t -> local (\x -> x{ocol_ = fromEnum (Text.Trifecta.Delta.column p) + 2}) 
-                   $ docTemplate t
+                    String vt -> return . vcat . map text 
+                                 . LT.lines . LT.fromStrict $ vt
+                    Number s -> return $ text (LT.pack (show s))
+                    _  -> do
+                      warnS "not a string value (using plain JSON instead)"
+                      return $ text $ LT.toLazyTextWith 1000 
+                                 $ encodeToTextBuilder vv
+        docT vv = maybe (docC vv) (newv vv) t
+     Template p t -> local (ocol .~ fromEnum (P.column p)) $ docTemplate t
      List lopts t s e -> do
        vv <- headVal
        case vv of
-         Arr [] -> maybe (return empty) docArr e
-         Arr av -> do
-                 e' <- mapM (flip newv t) av
+         Array av | V.null av -> maybe (return empty) docArr e
+         Array av -> do
+                 e' <- mapM (flip newv t) (V.toList av)
                  e'' <- case s of
                       Nothing -> return e'
                       Just st -> do
@@ -60,39 +118,55 @@ docArr (A p a opts) = return . applyOpts opts =<< case a of
                     LFillSep -> fillSep e''
                     LSep     -> sep e''
                     LHCat    -> hcat e''
-                    LVCat    -> hcat e''
+                    LVCat    -> vcat e''
                     LFillCat -> fillCat e''
                     LCat     -> cat e''
-         _      -> err "not an array's value"
-     Case d -> do
+         _      -> errS "not a list"
+     Case f d -> do
        h <- headVal
        case h of
-         n :@ hv -> maybe (err $ "no such case alternative: " ++ show n) (newv hv)
-              $ n `M.lookup` d
-         _           -> err "case for not tagged value"
+         Object obj -> docArr =<< lu "no such case option: " d
+                    =<< val
+                    =<< lu "no such object's field: " obj f
+         _          -> errS "not an object in switch"
      Mod m -> return $ case m of
                          SoftLine  -> softline
                          Line   -> line
                          SBreak -> softbreak 
                          LBreak -> linebreak
-     _ -> err "not implemented"
+     _ -> errS "not implemented"
   where
-  newv vv = local (\x -> x{stack_ = vv : stack_ x}) . docArr
+  newv vv = local (\x -> x{_stack = vv : _stack x}) . docArr
 
-docTxt :: Delta -> String -> Delta -> D (Doc e)
-docTxt _ t _ =do
-  c <- asks ocol_
-  return $ case lines t of
-             [t'] -> text t'
-             t' -> hlp c t'
+lines' :: Text -> [Text]
+lines' ps | T.null ps   = []
+          | otherwise = h : case T.uncons t of
+                              Nothing -> []
+                              Just (c,t')
+                                  | c == '\n' -> T.lines t'
+                                  | c == '\r' -> case T.uncons t' of
+                                                   Just ('\n',t'') -> T.lines t''
+                                                   _               -> T.lines t'
+    where (h,t)    = T.span notEOL ps
+          notEOL c = c /= '\n' && c /= '\r'
+
+docTxt :: Text -> D Doc
+docTxt t = do
+  c <- asks _ocol 
+  case lines' t of
+    [t'] -> return $ text (LT.fromStrict t')
+    t' -> do
+      return $ hlp c t'
       where
-        hlp c = vcat . map (text . l c)
-        l c n = sp' ++ ns
+        ltxt t | T.null t = text LT.empty -- linebreak
+        ltxt t | otherwise = text (LT.fromStrict (l c t)) 
+        hlp c = vcat . map ltxt
+        l c n = T.concat [sp', ns]
             where
-              (sp,ns) = span Data.Char.isSpace n
-              sp' = drop (fromEnum c) sp
+              (sp,ns) = T.span Data.Char.isSpace n
+              sp' = T.drop (fromEnum c) sp
 
-applyOpts :: [TOpt] -> Doc e -> Doc e
+applyOpts :: [TOpt] -> Doc -> Doc
 applyOpts [] d = align d
 applyOpts opts d = foldr (\o d' -> case o of
             TGroup -> group d'
@@ -102,29 +176,32 @@ applyOpts opts d = foldr (\o d' -> case o of
             TDef -> d'
             _ -> align d') d opts
 
-docTemplate' :: TemplateItem Arr -> D (Doc e)
-docTemplate' (Left (Txt i t o))  = docTxt i t o
-docTemplate' (Right a)           = return . applyOpts (arrOpts a) =<< docArr a
+docTemplate' :: TemplateItem Arr -> D Doc
+docTemplate' (Left (Txt _ t))  = docTxt t
+docTemplate' (Right a)         = return . applyOpts (a^.arrOpts) =<< docArr a
 
-docTemplate :: Template -> D (Doc e)
+docTemplate :: Template -> D Doc
 docTemplate = return . hcat <=< mapM docTemplate'
 
-getVar' :: [Val] -> Var -> D (Maybe Val)
-getVar' (Obj m : _) (N n)    = return $ n `M.lookup` m 
-getVar' (_ : t)     (Back v) = getVar' t v
-getVar' (h : _)     Self     = return (Just h)
-getVar' (h : _)     n        = err $ "cannot reference variable: " 
-                                    ++ show n ++ " in " ++ show h
-getVar' []          n        = err $ "empty stack for " ++ show n
+getVar' :: [Value] -> Var -> D Value
+getVar' (Object m : _) (N n)    = return $ maybe Null id $  n `M.lookup` m 
+getVar' (_ : t)        (Back v) = getVar' t v
+getVar' (h : _)        Self     = return h
+getVar' (h : _)        n        = err $ C.text "cannot reference variable " 
+                                    C.<+> C.bold (C.text (show n))
+                                    C.<+> C.text " in " 
+                                    C.<+> C.bold (C.text (show h))
+getVar' []             n        = err $ C.text "empty stack for " 
+                                        C.<+> C.bold (C.text (show n))
 
-headVal :: D Val
+headVal :: D Value
 headVal = do
-  v <- asks stack_
+  v <- asks _stack
   case v of
     (h : _) -> return h
-    _       -> err "empty stack"
+    _       -> errS "empty stack"
 
-getVar :: Var -> D (Maybe Val)
+getVar :: Var -> D Value
 getVar n = do
-  d <- asks stack_
+  d <- asks _stack
   getVar' d n

@@ -18,56 +18,50 @@ semantics.
 For example let's take a Java class generator task. In current syntax it looks 
 like:
 
-        ${imports */ $[import ${%$}$]$}
-        
+        package com.example.TestPackage;
+
+        ${imports */vcat $[import ${%$}.*;$]$}
+
         public class ${name$} ${parent $[extends ${%$}$]$} {
-               ${members */{
-                         field : $[${visibility$} ${type$} ${name/>> $};$] ,
-                         method:$[${visibility$} ${type$} 
-                              ${name$}(${args *$[${type$} ${name$}$]$}) {
-                                    ${body$}
-                              }$]
-                         }
-              $}       
+                ${members */?{
+                        field : $[${visibility$} ${ty$} ${name/>> $};$] ,
+                        method:$[${visibility$} ${result$} ${name$}(${args *$[${ty$} ${name$}$]$}) {
+                                  ${body$}
+                             }$]
+                        }
+               $}
         }
+
 
 Input values may look like:
 
-    test1 :: Val
-    test1 = obj [
-         "imports"  =: Arr [
-                        c "java.com", c "java.class"
-                       ],
-         "name"    =: c "TestClasS",
-         "parent"  =: c "ParrenatS",
-         "members" =: Arr [
-                       "field" :@ obj [
-                                    "visibility"  =: c "private",
-                                    "type"        =: c "int",
-                                    "name"        =: c "myvara\n- 2"
-                                   ],
-                       "method" :@ obj [
-                                     "visibility" =: c "public",
-                                     "type"       =: c "int",
-                                     "name"       =: c "getMyvara",
-                                     "args"       =: Arr [],
-                                     -- TODO: body as Doc
-                                     "body"       =: c "return myvara;" 
-                                    ],
-                       "method" :@ obj [
-                                     "visibility" =: c "public",
-                                     "type"       =: c "void",
-                                     "name"       =: c "setMyvara",
-                                     "args"       =: Arr [
-                                                      obj [
-                                                       "type" =: c "int", 
-                                                       "name" =: c "v"
-                                                      ]
-                                                     ],
-                                     "body"       =: c "myvara = v;"
-                                    ]
-                      ]
-        ]
+       test1 :: ClassDef
+       test1 = ClassDef {
+          imports = ["java.com","java.class"],
+          name = "TestClass",
+          parent = Just "TestParent",
+          members = [
+           Field {
+             mVisibility = Private,
+             mTy = "int",
+             mName = "myvar"
+           },
+           Method {
+             mVisibility = Public,
+             mResult = "int",
+             mName = "getMyVar",
+             mArgs = [],
+             mBody = "return myvar;"
+           },
+           Method {
+             mVisibility = Public,
+             mResult = "void",
+             mName = "setMyVar",
+             mArgs = [ArgDef "int" "v"],
+             mBody = "myvar = v;"
+           }
+          ]
+        }
 
 Templates have two distinguished levels, namely template levels where template 
 expressions are specified and verbatim text level which is simply copied into 
@@ -118,25 +112,18 @@ It has the lowest syntax priority so it binds to outer expression. Use parenthes
 to group template expressions and bind the options closely.
 
 Rather typically an input of a template may be any structured data format like 
-JSON or XML. The prototype implementation doesn't try to read input data, it should 
-be provided as Haskell value with Val type. It is quite straightforward reflection 
-of untyped encoding of structured data.
+JSON or XML. Here aeson's JSON "Value" type is used as input data. In turn most
+of plain Haskell's types may be used via template haskell or generics.
 
-The only but significant difference is tagged values (i.e. :@ constructor). It is 
-the way to define heterogeneous data structures similar to polymorphic reference 
-in OOP language like C++/Java. The feature is not standardized in JSON but it is 
-possible to choose some JSON object's field to specify the type. During serialization 
-of Java object into XML typically type attribute from XML Schema namespace is used 
-for the same purpose. However it may be simulated by some other ways, like element's 
-name, or derived from other values.
-
-In the tempting system the tags are used for selecting sub-template to apply. It 
-simply matches the name of the tag to the name of corresponding sub-template. In 
-template syntax corresponding expression may be defined by comma-separated pairs 
-of tag name and template expression to apply if corresponding value is tagged with 
-that name. The name and the template expression are separated by colon and whole case 
-expression is enclosed into curly braces. In the example by means of case expression 
-the system emits either field or methods definitions.
+In the templating system the tags are used for selecting sub-template to apply. 
+The tag is any string field of an object in parameter. By default it is "tag"
+field.  It  simply matches the name of the tag to the name of corresponding 
+sub-template. In  template syntax corresponding expression may be defined by c
+omma-separated pairs  of tag name and template expression to apply if 
+corresponding value is tagged with that name. The name and the template 
+expression are separated by colon and whole case expression is enclosed into 
+curly braces. In the example by means of case expression the system emits either 
+field or methods definitions.
 
 The tag based selection is replacement of if-then-else expressions in template 
 language. The system doesn't allow arbitrary control operators to encourage 
@@ -154,4 +141,3 @@ TODO:
 * Staging
 * Quasiquoter for embedding into Haskell code
 * Template's compilation 
-* Production quality

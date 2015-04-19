@@ -1,21 +1,33 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving, OverloadedStrings #-}
 module Text.PrettyTemplate.Parser where
 
 import Text.PrettyTemplate.Syntax
 
 import Control.Applicative
-import qualified Data.Map as M
+import Control.Monad (MonadPlus(..))
+import Data.List
+import Data.Monoid
+import qualified Data.HashMap.Strict as M
 import Text.Trifecta
+import Text.Trifecta.Delta
 import Text.Parser.Token.Highlight
 import Text.Parser.Token.Style
-import Control.Monad (MonadPlus(..))
 import Text.Trifecta.Delta
+import Text.Parser.Token.Highlight
+import Text.Parser.Token.Style
+import qualified Text.Trifecta.Rendering as P
+import qualified Text.Parser.Expression as P
 import qualified Data.HashSet as HashSet
-import Data.List
-import Data.Semigroup
+import qualified Data.Text as T
+import Data.Text(Text)
+import qualified Control.Lens as L
+import qualified Data.ByteString as BS
+import Data.ByteString(ByteString)
+import qualified Text.PrettyPrint.ANSI.Leijen as C
+import Control.Exception(throw)
 
 idstyle :: TokenParsing m => IdentifierStyle m
-idstyle = emptyIdents{ styleReserved 
+idstyle = emptyIdents{ _styleReserved 
                         = HashSet.fromList ["$[","$]","${-","$-}","$--", "+{",
                                             "${","$}","/","%","*","?", "{", "}", 
                                             ",", "cat", "$/"
@@ -49,21 +61,28 @@ topt = try $ rw "/" *> (
                    <|> TDef <$ rw "-"
                    )
 
-iden :: TokenParsing m => m String
+pos :: (DeltaParsing m, HasSpan a) => m a -> m a
+pos p = do
+  (r :~ s) <- spanned p
+  return $ L.set P.span s r
+
+iden :: (Monad m, TokenParsing m) => m Text
 iden = ident idstyle
 
-var :: TokenParsing m => m Var
+var :: (Monad m, TokenParsing m) => m Var
 var = Self <$ rw "%"
       <|> Back <$ rw "^" <*> var
       <|> N <$> iden
 
 arr' :: DeltaParsing m => m Arr
-arr' = mkA (
+arr' = pos $ mkA (
             List <$ rw "*" <*> lopts <*> arr' <*> optional (rw "," *> arr')     
                 <*> optional (rw "." *> arr')
             <|> Var <$> var <*> optional arr' <*> optional (rw "." *> arr')
-            <|> Template <$ try (string "$[") <*> template' <* rw "$]"
-            <|> Case <$ rw "{" <*> dictCont <* rw "}"
+            <|> Template <$ try (string "$[") <*> position 
+                    <*> template' <* rw "$]"
+            <|> Case <$ rw "?" <*> (iden <|> pure "tag") 
+                    <* rw "{" <*> dictCont <* rw "}"
             <|> Up <$ rw "+" <*> arr'
             <|> Down <$ rw "-" <*> arr'
            ) 
@@ -73,7 +92,7 @@ dictCont :: DeltaParsing m => m (Dict Arr)
 dictCont = M.fromList <$> commaSep ((,) <$> iden <* rw ":" <*> arr)
 
 mkA :: DeltaParsing m => m (Arr' Arr) -> m Arr
-mkA p = A <$> position <*> p <*> pure []
+mkA p = mkArr <$> p <*> pure []
 
 updOpts :: Arr -> [TOpt] -> Arr
 updOpts (A p v o) o' = A p v (o ++ o') 
@@ -115,7 +134,7 @@ tspace eatSpaces = skipSome item
                    <|> oneOf "$" *> inComment
 
 dtxt :: DeltaParsing m => m Txt
-dtxt = Txt <$> position <*> (($"") <$> txt) <*> position
+dtxt = pos (mkTxt . T.pack . ($ "") <$> txt)
 
 txt :: TokenParsing m => m ShowS
 txt = cnt <$> some itm <?> "template text"
@@ -132,16 +151,15 @@ txt = cnt <$> some itm <?> "template text"
 
 newtype T a = T { unT :: Parser a} 
     deriving (Functor, Applicative, Parsing, Monad, MonadPlus, Alternative, 
-              CharParsing, DeltaParsing, MarkParsing Delta, Monoid, Semigroup)
+              CharParsing, DeltaParsing, MarkParsing Delta, Monoid)
 
 instance TokenParsing T where
     someSpace = tspace True
 
-
 parseFile :: String -> IO Template
 parseFile arg = do
-  r <- parseFromFile (unT template <* eof) arg
+  r <- parseFromFileEx (unT template <* eof) arg
   case r of
-    Nothing -> fail "parse error"
-    Just t -> return t
-       
+    Failure e -> throw $ TemplateError e
+    Success t -> return t
+

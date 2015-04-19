@@ -1,15 +1,11 @@
-$-- import declarations
+package com.example.TestPackage;
 
-$-- ${{imports * $[%$]$}
-
-$-- ${+someinclude$}
-
-   ${imports * $[import ${%$}$],$[, $]$}
+${imports */vcat $[import ${%$}.*;$]$}
 
 public class ${name$} ${parent $[extends ${%$}$]$} {
-       ${members */{
-                 field : $[${visibility$} ${type$} ${name/>> $};$] ,
-                 method:$[${visibility$} ${type$} ${name$}(${args *$[${type$} ${name$}$]$}) {
+       ${members */?{
+                 field : $[${visibility$} ${ty$} ${name/>> $};$] ,
+                 method:$[${visibility$} ${result$} ${name$}(${args *$[${ty$} ${name$}$]$}) {
                              ${body$}
                           }$]
                  }

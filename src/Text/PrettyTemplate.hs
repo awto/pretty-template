@@ -1,15 +1,20 @@
-module Text.PrettyTemplate(Val(..),TDoc,Template,applyFileTemplate,applyTemplate) where
+module Text.PrettyTemplate(Template(..),applyFileTemplate,applyTemplate,
+                          TemplateError(..),outputTemplateError) where
+
+import Data.Aeson
+import qualified Data.Text as T
+import Data.Text(Text)
+import Control.Arrow(right)
+import Control.Monad.Error
+import Control.Exception
 
 import Text.PrettyTemplate.Syntax
 import Text.PrettyTemplate.Parser
 import Text.PrettyTemplate.Printer
 
-import Control.Arrow(right)
-import Control.Monad.Error
+applyTemplate :: ToJSON a => Template -> a -> IO Text
+applyTemplate t v = applyRender t (toJSON v)
 
-applyTemplate :: Template -> Val -> Either String String
-applyTemplate t v = right show (apply v t)
+applyFileTemplate :: ToJSON a => String -> a -> IO Text
+applyFileTemplate n d = flip applyTemplate d =<< parseFile n
 
-applyFileTemplate :: String -> Val -> IO String
-applyFileTemplate n d = either (throwError . strMsg) return . flip applyTemplate d 
-                       =<< parseFile n
